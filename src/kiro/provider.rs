@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::http_client::{ProxyConfig, build_client};
 use crate::kiro::machine_id;
-use crate::kiro::model::credentials::KiroCredentials;
+use crate::kiro::random_utils;
 use crate::kiro::token_manager::{CallContext, MultiTokenManager};
 
 /// 每个凭据的最大重试次数
@@ -75,14 +75,18 @@ impl KiroProvider {
             .ok_or_else(|| anyhow::anyhow!("无法生成 machine_id，请检查凭证配置"))?;
 
         let kiro_version = &config.kiro_version;
-        let os_name = &config.system_version;
-        let node_version = &config.node_version;
 
-        let x_amz_user_agent = format!("aws-sdk-js/1.0.27 KiroIDE-{}-{}", kiro_version, machine_id);
+        // 使用随机化的 User-Agent（同步自 kiro2api）
+        let ua_headers = random_utils::build_user_agent_headers(kiro_version);
 
-        let user_agent = format!(
-            "aws-sdk-js/1.0.27 ua/2.1 os/{} lang/js md/nodejs#{} api/codewhispererstreaming#1.0.27 m/E KiroIDE-{}-{}",
-            os_name, node_version, kiro_version, machine_id
+        // 替换 machine_id 到 User-Agent 中
+        let x_amz_user_agent = ua_headers.x_amz_user_agent.replace(
+            &format!("KiroIDE-{}-", kiro_version),
+            &format!("KiroIDE-{}-{}-", kiro_version, machine_id),
+        );
+        let user_agent = ua_headers.user_agent.replace(
+            &format!("KiroIDE-{}-", kiro_version),
+            &format!("KiroIDE-{}-{}-", kiro_version, machine_id),
         );
 
         let mut headers = HeaderMap::new();
@@ -92,7 +96,10 @@ impl KiroProvider {
             "x-amzn-codewhisperer-optout",
             HeaderValue::from_static("true"),
         );
-        headers.insert("x-amzn-kiro-agent-mode", HeaderValue::from_static("vibe"));
+        headers.insert(
+            "x-amzn-kiro-agent-mode",
+            HeaderValue::from_static(ua_headers.x_amzn_kiro_agent_mode),
+        );
         headers.insert(
             "x-amz-user-agent",
             HeaderValue::from_str(&x_amz_user_agent).unwrap(),
@@ -268,6 +275,7 @@ impl KiroProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::kiro::model::credentials::KiroCredentials;
     use crate::kiro::token_manager::CallContext;
     use crate::model::config::Config;
 
@@ -314,7 +322,8 @@ mod tests {
 
         assert_eq!(headers.get(CONTENT_TYPE).unwrap(), "application/json");
         assert_eq!(headers.get("x-amzn-codewhisperer-optout").unwrap(), "true");
-        assert_eq!(headers.get("x-amzn-kiro-agent-mode").unwrap(), "vibe");
+        // 验证 x-amzn-kiro-agent-mode 为 "spec"（同步自 kiro2api）
+        assert_eq!(headers.get("x-amzn-kiro-agent-mode").unwrap(), "spec");
         assert!(
             headers
                 .get(AUTHORIZATION)
@@ -324,5 +333,11 @@ mod tests {
                 .starts_with("Bearer ")
         );
         assert_eq!(headers.get(CONNECTION).unwrap(), "close");
+
+        // 验证 User-Agent 包含随机化组件
+        let user_agent = headers.get(reqwest::header::USER_AGENT).unwrap().to_str().unwrap();
+        assert!(user_agent.contains("aws-sdk-js/1.0.18"));
+        assert!(user_agent.contains("-electron.0"));
+        assert!(user_agent.contains("138.0."));
     }
 }
