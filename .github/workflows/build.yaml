@@ -12,7 +12,7 @@ on:
         default: '2026.1.1'
 
 permissions:
-  contents: read
+  contents: write  # 需要写权限以创建 Release
 
 jobs:
   build:
@@ -74,12 +74,46 @@ jobs:
       - name: Build app
         run: cargo build --release --target ${{ matrix.target }}
 
+      - name: Prepare artifacts
+        shell: bash
+        run: |
+          VERSION="${{ github.event.inputs.version || github.ref_name }}"
+          mkdir -p artifacts
+          if [ -f "target/${{ matrix.target }}/release/kiro-rs.exe" ]; then
+            cp "target/${{ matrix.target }}/release/kiro-rs.exe" "artifacts/kiro-rs-${VERSION}-${{ matrix.name }}.exe"
+          else
+            cp "target/${{ matrix.target }}/release/kiro-rs" "artifacts/kiro-rs-${VERSION}-${{ matrix.name }}"
+          fi
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: kiro-rs-${{ github.event.inputs.version || github.ref_name }}-${{ matrix.name }}
           if-no-files-found: error
           compression-level: 6
-          path: |
-            target/${{ matrix.target }}/release/kiro-rs
-            target/${{ matrix.target }}/release/kiro-rs.exe
+          path: artifacts/*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: kiro-rs-*
+          merge-multiple: true
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.version || github.ref_name }}
+          name: Release ${{ github.event.inputs.version || github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: artifacts/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
